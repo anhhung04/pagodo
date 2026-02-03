@@ -47,6 +47,7 @@ def scan(
     max_results_per_search: int = typer.Option(None, "-n", "--max-results-per-search", help="Maximum results to return per search request (max 100)."),
     serper_api_key: str = typer.Option(None, "--api-key", help="API Key for the selected engine"),
     engine: str = typer.Option(None, "--engine", help="Search engine connector to use (default: serper)."),
+    max_workers: int = typer.Option(None, "-w", "--workers", help="Number of concurrent threads to use (default: 4)."),
 ):
     """
     Perform Google dork searches.
@@ -71,7 +72,8 @@ def scan(
         "max_results_per_search": 100,
         "serper_api_key": None,
         "serpapi_api_key": None,
-        "engine": "serper"
+        "engine": "serper",
+        "max_workers": 4
     }
     
     # Helper to resolve
@@ -149,7 +151,8 @@ def scan(
         specific_log_file_name=resolve(specific_log_file_name, "specific_log_file_name", None),
         country_code=resolve(country_code, "country_code", "vn"),
         max_results_per_search=resolve(max_results_per_search, "max_results_per_search", 100),
-        client=client
+        client=client,
+        max_workers=resolve(max_workers, "max_workers", 4)
     )
     pagodo.go()
 

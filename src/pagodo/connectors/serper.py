@@ -33,7 +33,7 @@ class SerperConnector(SearchConnector):
         self.log.error(f"Serper API failed after {max_retries} attempts")
         return None
 
-    def search(self, query: str, max_results: int, country_code: str = "vn") -> Generator[List[str], None, None]:
+    def search(self, query: str, max_results: int, page_size: int = 100, country_code: str = "vn") -> Generator[List[str], None, None]:
         url = "https://google.serper.dev/search"
         headers = {
             'X-API-KEY': self.api_key,
@@ -47,11 +47,11 @@ class SerperConnector(SearchConnector):
         # max_results passed here is the limit set by user (-m)
         
         while total_fetched < max_results:
-            remaining_needed = max_results - total_fetched
-            # Note: The original logic respected a separate max_results_per_search limit, 
-            # and hard limit of 100. We can default max_results_per_search to 100 for now or pass it.
-            # Simpler to just use 100 as batch size.
-            num_to_fetch = min(remaining_needed, 100)
+            if total_fetched > max_results:
+                break
+            
+            # Use page_size directly for num, regardless of remaining needed
+            num_to_fetch = page_size
             
             body = {
                 "q": query,

@@ -33,7 +33,7 @@ class SerpApiConnector(SearchConnector):
         self.log.error(f"SerpApi failed after {max_retries} attempts")
         return None
 
-    def search(self, query: str, max_results: int, country_code: str = "vn") -> Generator[List[str], None, None]:
+    def search(self, query: str, max_results: int, page_size: int = 100, country_code: str = "vn") -> Generator[List[str], None, None]:
         url = "https://serpapi.com/search"
         
         # SerpApi pagination uses 'start' (offset) and 'num' (results per page, max 100)
@@ -43,7 +43,8 @@ class SerpApiConnector(SearchConnector):
         
         while total_fetched < max_results:
             remaining_needed = max_results - total_fetched
-            num_to_fetch = min(remaining_needed, num_per_page)
+            # num_to_fetch = min(remaining_needed, num_per_page)
+            num_to_fetch = page_size
             
             # Note: num parameter in SerpApi defines how many results to return.
             # start parameter defines the offset.

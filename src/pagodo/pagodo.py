@@ -10,6 +10,8 @@ import time
 
 # Third party Python libraries.
 import requests
+import concurrent.futures
+import threading
 
 class Pagodo:
     """Pagodo class object"""
@@ -29,6 +31,7 @@ class Pagodo:
         country_code="vn",
         max_results_per_search=100,
         client=None,
+        max_workers=4,
     ):
         """Initialize Pagodo class object."""
         import tempfile
@@ -103,17 +106,9 @@ class Pagodo:
         self.maximum_delay_between_dork_searches_in_seconds = maximum_delay_between_dork_searches_in_seconds
         self.disable_verify_ssl = disable_verify_ssl
         self.max_results_per_search = max_results_per_search
+        self.max_workers = max_workers
+        self.lock = threading.Lock()
 
-        # Fancy way of generating a list of 20 random values between minimum_delay_between_dork_searches_in_seconds and
-        # maximum_delay_between_dork_searches_in_seconds.  A random value is selected between each different Google
-        # dork search.
-        # """
-        # 1) Generate a random list of values between minimum_delay_between_dork_searches_in_seconds and
-        #    maximum_delay_between_dork_searches_in_seconds
-        # 2) Round those values to the tenths place
-        # 3) Re-cast as a list
-        # 4) Sort the list
-        # """
         self.delay_between_dork_searches_list = sorted(
             list(
                 map(
@@ -142,101 +137,93 @@ class Pagodo:
 
 
 
-    def go(self):
-        """Start pagodo Google dork search."""
-
-        initiation_timestamp = datetime.datetime.now().isoformat()
-
-        self.log.info(f"Initiation timestamp: {initiation_timestamp}")
-
-        # Initialize starting dork number.
-        dork_counter = 1
-
-        total_dorks_to_search = len(self.google_dorks)
-
-        # Initialize dictionary to track dork results.
-        self.pagodo_results_dict = {
-            "dorks": {},
-            "initiation_timestamp": initiation_timestamp,
-            "completion_timestamp": "",
+    def _process_dork(self, dork):
+        """Process a single dork."""
+        dork_result = {
+            "urls_size": 0,
+            "urls": [],
         }
 
-        for dork in self.google_dorks:
-            self.pagodo_results_dict["dorks"][dork] = {
-                "urls_size": 0,
-                "urls": [],
-            }
+        try:
+            dork = dork.strip()
 
-            try:
-                dork = dork.strip()
+            # Search for the URLs to collect.
+            if self.domain:
+                query = f"site:{self.domain} {dork}"
+            else:
+                query = dork
 
-                # Search for the URLs to collect.
-                if self.domain:
-                    query = f"site:{self.domain} {dork}"
-                else:
-                    query = dork
-
-                """
-                Google search web GUI message for large search string queries:
-                    "the" (and any subsequent words) was ignored because we limit queries to 32 words.
-                """
-                # Search string is longer than 32 words.
-                if len(query.split(" ")) > 32:
-                    ignored_string = " ".join(query.split(" ")[32:])
-                    self.log.warning(
-                        "Google limits queries to 32 words (separated by spaces):  Removing from search query: "
-                        f"'{ignored_string}'"
-                    )
-
-                    # Update query variable.
-                    updated_query = " ".join(query.split(" ")[0:32])
-
-                    # If original query is in quotes, append a double quote to new truncated updated_query.
-                    if query.endswith('"'):
-                        updated_query = f'{updated_query}"'
-
-                    self.log.info(f"New search query: {updated_query}")
-
-                    query = updated_query
-
-                # Search Connector
-                dork_urls_list = []
-                
-                self.log.info(
-                    f"Search ( {dork_counter} / {total_dorks_to_search} ) for Google dork [ {query} ] "
-                    f"using Search Connector"
+            """
+            Google search web GUI message for large search string queries:
+                "the" (and any subsequent words) was ignored because we limit queries to 32 words.
+            """
+            # Search string is longer than 32 words.
+            if len(query.split(" ")) > 32:
+                ignored_string = " ".join(query.split(" ")[32:])
+                self.log.warning(
+                    "Google limits queries to 32 words (separated by spaces):  Removing from search query: "
+                    f"'{ignored_string}'"
                 )
 
-                for batch_urls in self.client.search(query, self.max_search_result_urls_to_return_per_dork, self.country_code):
-                    dork_urls_list.extend(batch_urls)
-                    if len(dork_urls_list) >= self.max_search_result_urls_to_return_per_dork:
-                         break
+                # Update query variable.
+                updated_query = " ".join(query.split(" ")[0:32])
 
-                # Remove any false positive URLs.
-                for url in list(dork_urls_list): # Iterate over a copy to allow removal
-                    # Ignore results from specific URLs like exploit-db.com, cert.org, and OffSec's Twitter account that
-                    # may just be providing information about the vulnerability.  Keeping it simple with regex.
-                    ignore_url_list = [
-                        "https://www.kb.cert.org",
-                        "https://www.exploit-db.com/",
-                        "https://twitter.com/ExploitDB/",
-                    ]
-                    for ignore_url in ignore_url_list:
-                        if re.search(ignore_url, url, re.IGNORECASE):
-                            self.log.warning(f"Removing {ignore_url} false positive URL: {url}")
-                            if url in dork_urls_list:
-                                dork_urls_list.remove(url)
+                # If original query is in quotes, append a double quote to new truncated updated_query.
+                if query.endswith('"'):
+                    updated_query = f'{updated_query}"'
 
-                dork_urls_list_size = len(dork_urls_list)
+                self.log.info(f"New search query: {updated_query}")
 
-                # Google dork results found.
-                if dork_urls_list:
-                    self.log.info(f"Results: {dork_urls_list_size} URLs found for Google dork: {dork}")
+                query = updated_query
 
-                    dork_urls_list_as_string = "\n".join(dork_urls_list)
-                    self.log.info(f"dork_urls_list:\n{dork_urls_list_as_string}")
+            # Search Connector
+            dork_urls_list = []
+            
+            self.log.info(
+                f"Search for Google dork [ {query} ] using Search Connector"
+            )
 
+            # Pass page_size=self.max_results_per_search
+            for batch_urls in self.client.search(
+                query, 
+                self.max_search_result_urls_to_return_per_dork, 
+                page_size=self.max_results_per_search, 
+                country_code=self.country_code
+            ):
+                dork_urls_list.extend(batch_urls)
+                if len(dork_urls_list) >= self.max_search_result_urls_to_return_per_dork:
+                        break
+
+            # Remove any false positive URLs.
+            for url in list(dork_urls_list): # Iterate over a copy to allow removal
+                # Ignore results from specific URLs like exploit-db.com, cert.org, and OffSec's Twitter account that
+                # may just be providing information about the vulnerability.  Keeping it simple with regex.
+                ignore_url_list = [
+                    "https://www.kb.cert.org",
+                    "https://www.exploit-db.com/",
+                    "https://twitter.com/ExploitDB/",
+                ]
+                for ignore_url in ignore_url_list:
+                    if re.search(ignore_url, url, re.IGNORECASE):
+                        self.log.warning(f"Removing {ignore_url} false positive URL: {url}")
+                        if url in dork_urls_list:
+                            dork_urls_list.remove(url)
+
+            dork_urls_list_size = len(dork_urls_list)
+
+            # Google dork results found.
+            if dork_urls_list:
+                self.log.info(f"Results: {dork_urls_list_size} URLs found for Google dork: {dork}")
+
+                dork_urls_list_as_string = "\n".join(dork_urls_list)
+                self.log.debug(f"dork_urls_list:\n{dork_urls_list_as_string}") 
+
+                with self.lock:
                     self.total_urls_found += dork_urls_list_size
+                    self.pagodo_results_dict["dorks"][dork] = {
+                        "urls_size": dork_urls_list_size,
+                        "urls": dork_urls_list,
+                    }
 
                     # Save URLs with valid results to an .txt file.
                     if self.save_urls_to_file:
@@ -246,34 +233,69 @@ class Pagodo:
                                 fh.write(f"{url}\n")
                             fh.write("#" * 50 + "\n")
 
+            # No Google dork results found.
+            else:
+                self.log.info(f"Results: {dork_urls_list_size} URLs found for Google dork: {dork}")
+                with self.lock:
                     self.pagodo_results_dict["dorks"][dork] = {
-                        "urls_size": dork_urls_list_size,
-                        "urls": dork_urls_list,
+                        "urls_size": 0,
+                        "urls": [],
                     }
 
-                # No Google dork results found.
-                else:
-                    self.log.info(f"Results: {dork_urls_list_size} URLs found for Google dork: {dork}")
+        except KeyboardInterrupt:
+            # Re-raise to be handled by caller or main thread
+            raise
+        except Exception as e:
+            self.log.error(f"Error with dork: {dork}.  Exception {e}")
+            if type(e).__name__ == "SSLError" and (not self.disable_verify_ssl):
+                self.log.info(
+                    "If you are using self-signed certificates for an HTTPS proxy, try-rerunning with the -l "
+                    "switch to disable verifying SSL/TLS certificates."
+                )
+        
+        # Per-thread delay
+        if dork != self.google_dorks[-1]: # This check might be less meaningful in parallel, but keeping delay logic
+             # Or just delay always after search?
+             # For parallel, we just sleep after each task independently
+             pause_time = random.choice(self.delay_between_dork_searches_list)
+             self.log.info(f"Sleeping {pause_time} seconds before thread releases...")
+             time.sleep(pause_time)
 
-            except KeyboardInterrupt:
-                sys.exit(0)
+    def go(self):
+        """Start pagodo Google dork search."""
 
-            except Exception as e:
-                self.log.error(f"Error with dork: {dork}.  Exception {e}")
-                if type(e).__name__ == "SSLError" and (not self.disable_verify_ssl):
-                    self.log.info(
-                        "If you are using self-signed certificates for an HTTPS proxy, try-rerunning with the -l "
-                        "switch to disable verifying SSL/TLS certificates.  Exiting..."
-                    )
-                    sys.exit(1)
+        initiation_timestamp = datetime.datetime.now().isoformat()
 
-            dork_counter += 1
+        self.log.info(f"Initiation timestamp: {initiation_timestamp}")
+        
+        total_dorks_to_search = len(self.google_dorks)
 
-            # Only sleep if there are more dorks to search.
-            if dork != self.google_dorks[-1]:
-                pause_time = random.choice(self.delay_between_dork_searches_list)
-                self.log.info(f"Sleeping {pause_time} seconds before executing the next dork search...")
-                time.sleep(pause_time)
+        # Initialize dictionary to track dork results.
+        self.pagodo_results_dict = {
+            "dorks": {},
+            "initiation_timestamp": initiation_timestamp,
+            "completion_timestamp": "",
+        }
+
+        self.log.info(f"Starting search with {self.max_workers} workers for {total_dorks_to_search} dorks")
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = {executor.submit(self._process_dork, dork): dork for dork in self.google_dorks}
+                
+                # Wait for all futures
+                concurrent.futures.wait(futures)
+                
+                # Check for exceptions
+                for future in futures:
+                     try:
+                        future.result()
+                     except Exception as exc:
+                        self.log.error(f"Dork processing generated an exception: {exc}")
+
+        except KeyboardInterrupt:
+            self.log.info("Process interrupted by user.")
+            sys.exit(0)
 
         self.log.info(f"Total URLs found for the {total_dorks_to_search} total dorks searched: {self.total_urls_found}")
 
