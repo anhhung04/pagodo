@@ -5,8 +5,7 @@
 `pagodo` automates Google searching for potentially vulnerable web pages and applications on the Internet. It replaces
 manually performing Google dork searches with a web GUI browser.
 
-There are 2 parts. The first is `ghdb_scraper.py` that retrieves the latest Google dorks and the second portion is
-`pagodo.py` that leverages the information gathered by `ghdb_scraper.py`.
+There are 2 parts. The first is `ghdb_scraper.py` that retrieves the latest Google dorks and the second portion is `pagodo` (scan) that leverages the information gathered.
 
 The core Google search library now uses the more flexible [yagooglesearch](https://github.com/opsdisk/yagooglesearch)
 instead of [googlesearch](https://github.com/MarioVilas/googlesearch). Check out the [yagooglesearch
@@ -46,17 +45,13 @@ Scripts are written for Python 3.6+. Clone the git repository and install the re
 ```bash
 git clone https://github.com/opsdisk/pagodo.git
 cd pagodo
-python3 -m venv .venv  # If using a virtual environment.
-source .venv/bin/activate  # If using a virtual environment.
-pip install --upgrade pip setuptools
-pip install -r requirements.txt
+uv sync
 ```
 
 ## ghdb_scraper.py
 
-To start off, `pagodo.py` needs a list of all the current Google dorks. The repo contains a `dorks/` directory with the
-current dorks when the `ghdb_scraper.py` was last run. It's advised to run `ghdb_scraper.py` to get the freshest data
-before running `pagodo.py`. The `dorks/` directory contains:
+To start off, `pagodo` needs a list of all the current Google dorks. Excecute the `scrape` command to get the freshest data
+before running `pagodo`. The `dorks/` directory contains:
 
 - the `all_google_dorks.txt` file which contains all the Google dorks, one per line
 - the `all_google_dorks.json` file which is the JSON response from GHDB
@@ -83,13 +78,13 @@ categories = {
 }
 ```
 
-### Using ghdb_scraper.py as a script
+### Scrape existing Dorks
 
 Write all dorks to `all_google_dorks.txt`, `all_google_dorks.json`, and individual categories if you want more
 contextual data about each dork.
 
 ```bash
-python ghdb_scraper.py -s -j -i
+uv run pagodo scrape -s -j -i
 ```
 
 ### Using ghdb_scraper as a module
@@ -122,10 +117,10 @@ dorks["category_dict"][1]["category_name"]
 
 ## pagodo.py
 
-### Using pagodo.py as a script
+### Using pagodo as a script
 
 ```bash
-python pagodo.py -d example.com -g dorks.txt
+uv run pagodo scan -d example.com -g dorks.txt
 ```
 
 ### Using pagodo as a module
@@ -234,7 +229,7 @@ them to `pagodo`
 Pass a comma separated string of proxies to `pagodo` using the `-p` switch.
 
 ```bash
-python pagodo.py -g dorks.txt -p http://myproxy:8080,socks5h://127.0.0.1:9050,socks5h://127.0.0.1:9051
+uv run pagodo scan -g dorks.txt -p http://myproxy:8080,socks5h://127.0.0.1:9050,socks5h://127.0.0.1:9051
 ```
 
 You could even decrease the `-i` and `-x` values because you will be leveraging different proxy IPs. The proxies passed
@@ -274,7 +269,7 @@ Throw `proxychains4` in front of the `pagodo.py` script and each _request_ looku
 thus source from a different IP).
 
 ```bash
-proxychains4 python pagodo.py -g dorks/all_google_dorks.txt -o [optional/path/to/results.json] -s [optional/path/to/results.txt]
+proxychains4 uv run pagodo scan -g dorks/all_google_dorks.txt -o [optional/path/to/results.json] -s [optional/path/to/results.txt]
 ```
 
 Note that this may not appear natural to Google if you:

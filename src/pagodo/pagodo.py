@@ -1,7 +1,4 @@
-#!/usr/bin/env python
-
 # Standard Python libraries.
-import argparse
 import datetime
 import json
 import logging
@@ -11,16 +8,8 @@ import re
 import sys
 import time
 
-
 # Third party Python libraries.
-import yagooglesearch
-
-
-# Custom Python libraries.
-
-
-__version__ = "2.7.0"
-
+import requests
 
 class Pagodo:
     """Pagodo class object"""
@@ -31,41 +20,57 @@ class Pagodo:
         domain="",
         max_search_result_urls_to_return_per_dork=100,
         save_pagodo_results_to_json_file=None,  # None = Auto-generate file name, otherwise pass a string for path and filename.
-        proxies="",
         save_urls_to_file=None,  # None = Auto-generate file name, otherwise pass a string for path and filename.
-        minimum_delay_between_dork_searches_in_seconds=37,
-        maximum_delay_between_dork_searches_in_seconds=60,
+        minimum_delay_between_dork_searches_in_seconds=1,
+        maximum_delay_between_dork_searches_in_seconds=2,
         disable_verify_ssl=False,
         verbosity=4,
-        specific_log_file_name="pagodo.py.log",
+        specific_log_file_name=None,
+        country_code="vn",
+        max_results_per_search=100,
+        client=None,
     ):
         """Initialize Pagodo class object."""
+        import tempfile
+        from .connectors.base import SearchConnector
 
         # Logging
         self.log = logging.getLogger("pagodo")
         log_formatter = logging.Formatter("%(asctime)s [%(threadName)-12.12s] [%(levelname)s] %(message)s")
 
-        # Setup file logging.
-        log_file_handler = logging.FileHandler(specific_log_file_name)
-        log_file_handler.setFormatter(log_formatter)
-        self.log.addHandler(log_file_handler)
+        if specific_log_file_name is None:
+             specific_log_file_name = os.path.join(tempfile.gettempdir(), f"pagodo_dork_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
-        # Setup console logging.
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(log_formatter)
-        self.log.addHandler(console_handler)
+        # Setup file logging.
+        # Check if the logger already has handlers to avoid duplicate logging
+        if not self.log.handlers:
+            log_file_handler = logging.FileHandler(specific_log_file_name)
+            log_file_handler.setFormatter(log_formatter)
+            self.log.addHandler(log_file_handler)
+
+            # Setup console logging.
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(log_formatter)
+            self.log.addHandler(console_handler)
 
         # Assign log level.
         self.verbosity = verbosity
         self.log.setLevel((6 - self.verbosity) * 10)
 
+        self.client = client
+        if not self.client or not isinstance(self.client, SearchConnector):
+            self.log.error("A valid SearchConnector client must be provided")
+            sys.exit(1)
+        
+        self.country_code = country_code
+
         # Run parameter checks.
         if not os.path.exists(google_dorks_file):
-            print("Specify a valid file containing Google dorks with -g")
+            self.log.error("Specify a valid file containing Google dorks with -g")
             sys.exit(0)
 
         if minimum_delay_between_dork_searches_in_seconds < 0:
-            print("Minimum delay between dork searches (-i) must be greater than 0")
+            self.log.error("Minimum delay between dork searches (-i) must be greater than 0")
             sys.exit(0)
 
         if maximum_delay_between_dork_searches_in_seconds < 0:
@@ -93,22 +98,22 @@ class Pagodo:
         self.domain = domain
         self.max_search_result_urls_to_return_per_dork = max_search_result_urls_to_return_per_dork
         self.save_pagodo_results_to_json_file = save_pagodo_results_to_json_file
-        self.proxies = proxies.strip().strip(",").split(",")
         self.save_urls_to_file = save_urls_to_file
         self.minimum_delay_between_dork_searches_in_seconds = minimum_delay_between_dork_searches_in_seconds
         self.maximum_delay_between_dork_searches_in_seconds = maximum_delay_between_dork_searches_in_seconds
         self.disable_verify_ssl = disable_verify_ssl
+        self.max_results_per_search = max_results_per_search
 
         # Fancy way of generating a list of 20 random values between minimum_delay_between_dork_searches_in_seconds and
         # maximum_delay_between_dork_searches_in_seconds.  A random value is selected between each different Google
         # dork search.
-        """
-        1) Generate a random list of values between minimum_delay_between_dork_searches_in_seconds and
-           maximum_delay_between_dork_searches_in_seconds
-        2) Round those values to the tenths place
-        3) Re-cast as a list
-        4) Sort the list
-        """
+        # """
+        # 1) Generate a random list of values between minimum_delay_between_dork_searches_in_seconds and
+        #    maximum_delay_between_dork_searches_in_seconds
+        # 2) Round those values to the tenths place
+        # 3) Re-cast as a list
+        # 4) Sort the list
+        # """
         self.delay_between_dork_searches_list = sorted(
             list(
                 map(
@@ -126,7 +131,6 @@ class Pagodo:
 
         self.base_file_name = f'pagodo_results_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}'
         self.total_urls_found = 0
-        self.proxy_rotation_index = 0
 
         # -o with no filename.  Desire to save results, don't care about the file name.
         if self.save_pagodo_results_to_json_file is None:
@@ -135,6 +139,8 @@ class Pagodo:
         # -s with no filename.  Desire to save results, don't care about the file name.
         if self.save_urls_to_file is None:
             self.save_urls_to_file = f"{self.base_file_name}.txt"
+
+
 
     def go(self):
         """Start pagodo Google dork search."""
@@ -193,35 +199,21 @@ class Pagodo:
 
                     query = updated_query
 
-                # Rotate through the list of proxies using modulus to ensure the index is in the self.proxies list.
-                proxy_index = self.proxy_rotation_index % len(self.proxies)
-                proxy = self.proxies[proxy_index]
-                self.proxy_rotation_index += 1
-
-                # Instantiate a new yagooglesearch.SearchClient object for each Google dork.
-                client = yagooglesearch.SearchClient(
-                    query,
-                    tbs="li:1",  # Verbatim search.
-                    num=100,  # Retrieve up to 100 Google search results at time.
-                    # Max desired valid URLs to collect per dork.
-                    max_search_result_urls_to_return=self.max_search_result_urls_to_return_per_dork,
-                    proxy=proxy,
-                    verify_ssl=not self.disable_verify_ssl,
-                    verbosity=self.verbosity,
-                )
-
-                # Randomize the user agent for best results.
-                client.assign_random_user_agent()
-
+                # Search Connector
+                dork_urls_list = []
+                
                 self.log.info(
-                    f"Search ( {dork_counter} / {total_dorks_to_search} ) for Google dork [ {query} ] using "
-                    f"User-Agent '{client.user_agent}' through proxy '{proxy}'"
+                    f"Search ( {dork_counter} / {total_dorks_to_search} ) for Google dork [ {query} ] "
+                    f"using Search Connector"
                 )
 
-                dork_urls_list = client.search()
+                for batch_urls in self.client.search(query, self.max_search_result_urls_to_return_per_dork, self.country_code):
+                    dork_urls_list.extend(batch_urls)
+                    if len(dork_urls_list) >= self.max_search_result_urls_to_return_per_dork:
+                         break
 
                 # Remove any false positive URLs.
-                for url in dork_urls_list:
+                for url in list(dork_urls_list): # Iterate over a copy to allow removal
                     # Ignore results from specific URLs like exploit-db.com, cert.org, and OffSec's Twitter account that
                     # may just be providing information about the vulnerability.  Keeping it simple with regex.
                     ignore_url_list = [
@@ -232,7 +224,8 @@ class Pagodo:
                     for ignore_url in ignore_url_list:
                         if re.search(ignore_url, url, re.IGNORECASE):
                             self.log.warning(f"Removing {ignore_url} false positive URL: {url}")
-                            dork_urls_list.remove(url)
+                            if url in dork_urls_list:
+                                dork_urls_list.remove(url)
 
                 dork_urls_list_size = len(dork_urls_list)
 
@@ -295,138 +288,3 @@ class Pagodo:
                 json.dump(self.pagodo_results_dict, fh, indent=4)
 
         return self.pagodo_results_dict
-
-
-# http://stackoverflow.com/questions/3853722/python-argparse-how-to-insert-newline-in-the-help-text
-class SmartFormatter(argparse.HelpFormatter):
-    def _split_lines(self, text, width):
-        if text.startswith("R|"):
-            return text[2:].splitlines()
-        # This is the RawTextHelpFormatter._split_lines
-        return argparse.HelpFormatter._split_lines(self, text, width)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description=f"pagodo - Passive Google Dork v{__version__}",
-        formatter_class=SmartFormatter,
-    )
-    parser.add_argument(
-        "-g",
-        "--google-dorks-file",
-        dest="google_dorks_file",
-        action="store",
-        required=True,
-        help="File containing Google dorks, 1 per line.",
-    )
-    parser.add_argument(
-        "-d",
-        "--domain",
-        dest="domain",
-        action="store",
-        required=False,
-        help="Domain to scope the Google dork searches.  Not required.",
-    )
-    parser.add_argument(
-        "-i",
-        "--minimum-delay-between-dork-searches",
-        dest="minimum_delay_between_dork_searches_in_seconds",
-        action="store",
-        required=False,
-        type=int,
-        default=37,
-        help="Minimum delay (in seconds) between a Google dork search.  Default: 37",
-    )
-    parser.add_argument(
-        "-x",
-        "--maximum-delay-between-dork-searches",
-        dest="maximum_delay_between_dork_searches_in_seconds",
-        action="store",
-        required=False,
-        type=int,
-        default=60,
-        help="Maximum delay (in seconds) between a Google dork search.  Default: 60",
-    )
-    parser.add_argument(
-        "-l",
-        "--disable-ssl-verification",
-        dest="disable_verify_ssl",
-        action="store_true",
-        required=False,
-        default=False,
-        help="Disable SSL/TLS validation.  Sometimes required if using an HTTPS proxy with self-signed certificates.",
-    )
-    parser.add_argument(
-        "-m",
-        "--max-search-urls-to-return-per-dork",
-        dest="max_search_result_urls_to_return_per_dork",
-        action="store",
-        required=False,
-        type=int,
-        default=100,
-        help="Maximum results to return per dork.  Default 100.",
-    )
-    parser.add_argument(
-        "-p",
-        "--proxies",
-        dest="proxies",
-        action="store",
-        required=False,
-        type=str,
-        default="",
-        help=(
-            "Comma separated string of proxies to round-robin through.  Example: "
-            "https://myproxy:8080,socks5h://127.0.0.1:9050,socks5h://127.0.0.1:9051 - The proxy scheme must conform "
-            "per the Python requests library: https://docs.python-requests.org/en/master/user/advanced/#proxies  Also "
-            "see https://github.com/opsdisk/yagooglesearch for more information."
-        ),
-    )
-    parser.add_argument(
-        "-o",
-        "--json-results-file",
-        nargs="?",
-        metavar="JSON_FILE",
-        dest="save_pagodo_results_to_json_file",
-        action="store",
-        default=False,
-        help="R|Save URL dork data to a JSON file.  Contains more information than .txt version\n"
-        "no -o = Do not save dork data to a JSON file\n"
-        "-o = Save dork data to pagodo_results_<TIMESTAMP>.json\n"
-        "-o JSON_FILE = Save dork data to JSON_FILE",
-    )
-    parser.add_argument(
-        "-s",
-        "--text-results-file",
-        nargs="?",
-        metavar="URL_FILE",
-        dest="save_urls_to_file",
-        action="store",
-        default=False,
-        help="R|Save URL dork data to a text file.\n"
-        "no -s = Do not save dork data to a file\n"
-        "-s = Save dork data to pagodo_results_<TIMESTAMP>.txt\n"
-        "-s URL_FILE = Save dork data to URL_FILE",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbosity",
-        dest="verbosity",
-        action="store",
-        type=int,
-        default=4,
-        help="Verbosity level (0=NOTSET, 1=CRITICAL, 2=ERROR, 3=WARNING, 4=INFO, 5=DEBUG).  Default: 4",
-    )
-    parser.add_argument(
-        "-z",
-        "--log",
-        dest="specific_log_file_name",
-        action="store",
-        default="pagodo.py.log",
-        required=False,
-        help="Save log data to a specific log filename, otherwise the default is pagodo.py.log",
-    )
-
-    args = parser.parse_args()
-
-    pagodo = Pagodo(**vars(args))
-    pagodo.go()
